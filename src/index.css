@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --panel-bg: #0f172a; /* slate-900 */
+  --border: #1e293b; /* slate-800 */
+}
+
+html, body, #root { height: 100%; }
+body { margin: 0; }
+
+.pane-title {
+  @apply text-xs font-semibold uppercase tracking-wider text-slate-400;
+}
+
+.input-base {
+  @apply w-full rounded-md border border-slate-700 bg-slate-800/60 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500;
+}
+
+.btn {
+  @apply inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-500 active:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.btn-secondary {
+  @apply inline-flex items-center gap-2 rounded-md bg-slate-700 px-3 py-2 text-sm font-medium text-slate-100 hover:bg-slate-600 active:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.grid-panels {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr; /* left, middle, right */
+  grid-template-rows: auto 1fr auto; /* top, middle, bottom */
+  gap: 0.75rem;
+  height: 100vh;
+  padding: 0.75rem;
+}
+
+.top-pane {
+  grid-column: 1 / span 3;
+}
+
+.left-pane { grid-column: 1; }
+.middle-pane { grid-column: 2; }
+.right-pane { grid-column: 3; }
+.bottom-pane {
+  grid-column: 1 / span 3;
+}
+
+.panel {
+  @apply rounded-lg border border-slate-800 bg-slate-900/60 p-3;
+}
+
+.header-textarea {
+  @apply input-base min-h-[8rem] font-mono text-xs;
+}
+
+.cm-editor { height: 400px; }
+.cm-editor.small { height: 220px; }
