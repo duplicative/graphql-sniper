@@ -133,6 +133,8 @@ function classNames(...xs: Array<string | false | null | undefined>) {
 export default function App() {
   const [url, setUrl] = useState('')
   const [headersRaw, setHeadersRaw] = useState('')
+  const [useProxy, setUseProxy] = useState(true)
+  const [proxyUrl, setProxyUrl] = useState('http://localhost:8787/forward')
 
   const [rawBody, setRawBody] = useState('')
   const [query, setQuery] = useState('')
@@ -175,22 +177,39 @@ export default function App() {
       if (vars !== undefined) body.variables = vars
       else body.variables = {}
 
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-      })
-      setRespStatus(`${res.status} ${res.statusText}`)
-      const hdrs: Array<[string, string]> = []
-      res.headers.forEach((v, k) => hdrs.push([k, v]))
-      setRespHeaders(hdrs)
-      const text = await res.text()
-      let bodyOut = text
-      const asJson = safeJsonParse(text)
-      if (asJson !== undefined) {
-        bodyOut = JSON.stringify(asJson, null, 2)
+      let asJson: any = undefined
+      if (useProxy) {
+        const proxyRes = await fetch(proxyUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url, method: 'POST', headers, body }),
+        })
+        const summary = await proxyRes.json()
+        setRespStatus(`${summary.status} ${summary.statusText || ''}`.trim())
+        const hdrs = Object.entries(summary.headers || {}) as Array<[string, string]>
+        setRespHeaders(hdrs)
+        let bodyOut: string = summary.body || ''
+        asJson = safeJsonParse(bodyOut)
+        if (asJson !== undefined) bodyOut = JSON.stringify(asJson, null, 2)
+        setRespBody(bodyOut)
+      } else {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        })
+        setRespStatus(`${res.status} ${res.statusText}`)
+        const hdrs: Array<[string, string]> = []
+        res.headers.forEach((v, k) => hdrs.push([k, v]))
+        setRespHeaders(hdrs)
+        const text = await res.text()
+        let bodyOut = text
+        asJson = safeJsonParse(text)
+        if (asJson !== undefined) {
+          bodyOut = JSON.stringify(asJson, null, 2)
+        }
+        setRespBody(bodyOut)
       }
-      setRespBody(bodyOut)
 
       // Build wordlist from request and response
       const next = new Set(wordSet)
@@ -270,16 +289,33 @@ export default function App() {
             </button>
             <button className="btn-secondary" onClick={onBeautify}>Beautify</button>
           </div>
-          <div>
-            <label className="pane-title">Global HTTP Headers (raw)</label>
-            <textarea
-              className="header-textarea mt-1 w-full"
-              placeholder={
-                'POST /api/v2/graphql HTTP/1.1\nHost: example.com\nAuthorization: Bearer …\nContent-Type: application/json'
-              }
-              value={headersRaw}
-              onChange={(e) => setHeadersRaw(e.target.value)}
-            />
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+            <div className="md:col-span-2">
+              <label className="pane-title">Global HTTP Headers (raw)</label>
+              <textarea
+                className="header-textarea mt-1 w-full"
+                placeholder={
+                  'POST /api/v2/graphql HTTP/1.1\nHost: example.com\nAuthorization: Bearer …\nContent-Type: application/json'
+                }
+                value={headersRaw}
+                onChange={(e) => setHeadersRaw(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="pane-title">Proxy</label>
+              <div className="mt-1 flex items-center gap-2">
+                <input id="useProxy" type="checkbox" checked={useProxy} onChange={(e) => setUseProxy(e.target.checked)} />
+                <label htmlFor="useProxy" className="text-sm text-slate-300">Use local proxy</label>
+              </div>
+              <input
+                className="input-base mt-2 w-full px-3 py-2 text-xs"
+                value={proxyUrl}
+                onChange={(e) => setProxyUrl(e.target.value)}
+                disabled={!useProxy}
+              />
+              <div className="mt-1 text-xs text-slate-400">Default: http://localhost:8787/forward</div>
+            </div>
+            
           </div>
         </div>
       </div>
