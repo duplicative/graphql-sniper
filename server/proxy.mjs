@@ -3,6 +3,13 @@ import https from 'node:https'
 import { URL } from 'node:url'
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 8787
+const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true' || process.env.DEBUG === 'yes'
+
+function debugLog(...args) {
+  if (DEBUG) {
+    console.log('[DEBUG]', ...args)
+  }
+}
 
 function sendCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*')
@@ -27,11 +34,53 @@ function readBody(req) {
   })
 }
 
-function forward({ targetUrl, method, headers, body }) {
+function forward({ targetUrl, method, headers, body, timeout = 30000 }) {
   return new Promise((resolve, reject) => {
     const u = new URL(targetUrl)
     const isHttps = u.protocol === 'https:'
     const transport = isHttps ? https : http
+
+    console.log(`[PROXY] Forwarding ${method || 'POST'} request to ${targetUrl}`)
+    debugLog(`[PROXY] Connection details:`, {
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || (isHttps ? 443 : 80),
+      path: u.pathname + (u.search || ''),
+      timeout: timeout,
+      headers: headers,
+      bodyLength: body ? body.length : 0
+    })
+    if (DEBUG && body) {
+      debugLog(`[PROXY] Request body:`, body)
+    }
+
+    // Clean and forward all user headers without Node.js defaults
+    const forwardedHeaders = { ...headers || {} };
+
+    // Suppress Node.js defaults that make it look non-browser
+    delete forwardedHeaders['user-agent']; // We'll set a browser-like one if missing
+    delete forwardedHeaders['accept-encoding']; // Let server handle compression
+
+    // Ensure browser-like defaults if not provided
+    if (!forwardedHeaders['User-Agent']) {
+      forwardedHeaders['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+    }
+    if (!forwardedHeaders['Accept']) {
+      forwardedHeaders['Accept'] = '*/*';
+    }
+    if (!forwardedHeaders['Accept-Language']) {
+      forwardedHeaders['Accept-Language'] = 'en-US,en;q=0.9';
+    }
+    if (!forwardedHeaders['Accept-Encoding']) {
+      forwardedHeaders['Accept-Encoding'] = 'gzip, deflate, br, zstd';
+    }
+
+    // Preserve empty headers (e.g., X-DataStax-Current-Tenant: )
+    Object.keys(forwardedHeaders).forEach(key => {
+      if (forwardedHeaders[key] === '') {
+        forwardedHeaders[key] = ''; // Ensure empty string for proper forwarding
+      }
+    });
 
     const opts = {
       protocol: u.protocol,
@@ -39,10 +88,23 @@ function forward({ targetUrl, method, headers, body }) {
       port: u.port || (isHttps ? 443 : 80),
       path: u.pathname + (u.search || ''),
       method: method || 'POST',
-      headers: headers || {},
+      headers: forwardedHeaders,
+      timeout: timeout,
+      tls: {
+        minVersion: 'TLSv1.2',
+        maxVersion: 'TLSv1.3',
+        rejectUnauthorized: false,  // For testing only - bypasses cert validation
+        ciphers: 'HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:!SRP:!CAMELLIA'
+      }
     }
 
+    debugLog(`[PROXY] Forwarded headers:`, Object.keys(forwardedHeaders).sort().join(', '));
+    debugLog(`[PROXY] Body preview:`, body ? body.substring(0, 100) + '...' : 'No body');
+
     const req = transport.request(opts, (res) => {
+      debugLog(`[PROXY] Response received: ${res.statusCode} ${res.statusMessage}`)
+      debugLog(`[PROXY] Response headers:`, res.headers)
+
       const chunks = []
       res.on('data', (c) => chunks.push(c))
       res.on('end', () => {
@@ -53,15 +115,64 @@ function forward({ targetUrl, method, headers, body }) {
           if (Array.isArray(v)) headersOut[k] = v.join(', ')
           else if (v !== undefined) headersOut[k] = String(v)
         }
+
+        const status = res.statusCode || 0
+        const isError = status < 200 || status >= 300
+
+        if (isError) {
+          console.error(`[PROXY] Error response: ${status} ${res.statusMessage || ''} from ${targetUrl}`)
+          debugLog(`[PROXY] Error response body:`, text)
+        } else {
+          console.log(`[PROXY] Success response: ${status} from ${targetUrl}`)
+          if (DEBUG) {
+            debugLog(`[PROXY] Response body length: ${text.length} bytes`)
+          }
+        }
+
         resolve({
-          status: res.statusCode || 0,
+          status,
           statusText: res.statusMessage || '',
           headers: headersOut,
           body: text,
+          isError,
         })
       })
     })
-    req.on('error', reject)
+
+    req.on('timeout', () => {
+      console.error(`[PROXY] Request timeout after ${timeout}ms to ${targetUrl}`)
+      debugLog(`[PROXY] Timeout details:`, {
+        targetUrl,
+        timeout,
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || (isHttps ? 443 : 80)
+      })
+      req.destroy()
+      reject(new Error(`Request timeout after ${timeout}ms`))
+    })
+
+    req.on('error', (err) => {
+      console.error(`[PROXY] Request error to ${targetUrl}:`, err.message, err.code || '')
+      debugLog(`[PROXY] Error details:`, {
+        code: err.code,
+        errno: err.errno,
+        syscall: err.syscall,
+        hostname: u.hostname,
+        port: u.port || (isHttps ? 443 : 80),
+        stack: err.stack
+      })
+      reject(err)
+    })
+
+    req.on('connect', () => {
+      debugLog(`[PROXY] Connected to ${u.hostname}:${u.port || (isHttps ? 443 : 80)}`)
+    })
+
+    req.on('socket', (socket) => {
+      debugLog(`[PROXY] Socket assigned, remote address: ${socket.remoteAddress}:${socket.remotePort}`)
+    })
+
     if (body) req.write(body)
     req.end()
   })
@@ -88,23 +199,35 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     const raw = await readBody(req)
+    debugLog(`[PROXY] Received request body:`, raw)
+
     const payload = JSON.parse(raw || '{}')
     const targetUrl = payload.url || payload.targetUrl
     if (!targetUrl) throw new Error('Missing url')
     const method = payload.method || 'POST'
     const headers = payload.headers || {}
+
+    debugLog(`[PROXY] Parsed request:`, { targetUrl, method, headers: Object.keys(headers) })
+
     let body = payload.body
     let outBody = undefined
+
     if (typeof body === 'string') {
+      // Treat as raw body (like curl --data-binary) - no modification
       outBody = body
     } else if (body !== undefined) {
-      outBody = JSON.stringify(body)
-      if (!headers['content-length'] && !headers['Content-Length']) {
-        headers['Content-Length'] = Buffer.byteLength(outBody)
-      }
-      if (!headers['content-type'] && !headers['Content-Type']) {
-        headers['Content-Type'] = 'application/json'
-      }
+      // JSON object - stringify exactly like curl
+      outBody = JSON.stringify(body, null, 0); // No pretty-printing, exact format
+    }
+
+    // Only add Content-Length if not provided by user (preserve curl-like behavior)
+    if (outBody && !headers['content-length'] && !headers['Content-Length']) {
+      headers['Content-Length'] = Buffer.byteLength(outBody);
+    }
+
+    // Only add Content-Type if not provided (don't override user setting)
+    if (outBody && !headers['content-type'] && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
     }
 
     const result = await forward({ targetUrl, method, headers, body: outBody })
@@ -112,12 +235,26 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify(result))
   } catch (e) {
+    console.error(`[PROXY] Forwarding error:`, e.message)
+    debugLog(`[PROXY] Error stack:`, e.stack)
     res.statusCode = 500
     res.setHeader('Content-Type', 'application/json')
-    res.end(JSON.stringify({ error: String(e?.message || e) }))
+    res.end(JSON.stringify({
+      error: String(e?.message || e),
+      isError: true,
+      status: 0,
+      statusText: 'Proxy Error',
+      headers: {},
+      body: ''
+    }))
   }
 })
 
 server.listen(PORT, () => {
   console.log(`Proxy listening on http://localhost:${PORT}`)
+  if (DEBUG) {
+    console.log(`[DEBUG] Debug logging enabled`)
+  } else {
+    console.log(`Set DEBUG=1 to enable debug logging`)
+  }
 })

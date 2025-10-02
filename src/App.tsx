@@ -1,8 +1,8 @@
-import React, { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
-import { graphql as cmGraphql } from '@codemirror/lang-graphql'
+import { graphql as cmGraphql } from 'cm6-graphql'
 import { json as cmJson } from '@codemirror/lang-json'
-import { parse, print, visit, Kind, type ASTNode } from 'graphql'
+import { parse, print, visit } from 'graphql'
 
 type HeaderMap = Record<string, string>
 
@@ -19,6 +19,8 @@ function parseRawHeaders(raw: string): HeaderMap {
     const key = trimmed.slice(0, idx).trim()
     const value = trimmed.slice(idx + 1).trim()
     if (!key) continue
+    // Skip Content-Length header as it will be calculated by the proxy
+    if (key.toLowerCase() === 'content-length') continue
     headers[key] = value
   }
   return headers
@@ -185,7 +187,19 @@ export default function App() {
           body: JSON.stringify({ url, method: 'POST', headers, body }),
         })
         const summary = await proxyRes.json()
-        setRespStatus(`${summary.status} ${summary.statusText || ''}`.trim())
+
+        // Check if proxy itself returned an error
+        if (summary.error) {
+          setRespStatus(`Proxy Error: ${summary.error}`)
+          setRespHeaders([])
+          setRespBody('')
+          return
+        }
+
+        // Handle target server errors
+        const statusText = summary.isError ? `Error: ${summary.status} ${summary.statusText || ''}`.trim() : `${summary.status} ${summary.statusText || ''}`.trim()
+        setRespStatus(statusText)
+
         const hdrs = Object.entries(summary.headers || {}) as Array<[string, string]>
         setRespHeaders(hdrs)
         let bodyOut: string = summary.body || ''
