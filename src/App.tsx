@@ -379,13 +379,13 @@ export default function App() {
           </div>
           <div>
             <div className="text-slate-400">Headers:</div>
-            <pre className="input-base mt-1 max-h-[160px] overflow-auto p-2">{
+            <pre className="input-base mt-1 max-h-[160px] overflow-auto p-2 text-xs break-all">{
               respHeaders.map(([k, v]) => `${k}: ${v}`).join('\n') || '—'
             }</pre>
           </div>
           <div>
             <div className="text-slate-400">Body:</div>
-            <pre className="input-base mt-1 max-h-[400px] overflow-auto p-2 whitespace-pre-wrap">{respBody || '—'}</pre>
+            <pre className="input-base mt-1 max-h-[400px] overflow-auto p-2 text-xs break-all">{respBody || '—'}</pre>
           </div>
         </div>
       </div>

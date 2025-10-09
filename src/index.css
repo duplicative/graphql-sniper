@@ -28,7 +28,7 @@ body { margin: 0; }
 
 .grid-panels {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr; /* left, middle, right */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); /* left, middle, right */
   grid-template-rows: auto 1fr auto; /* top, middle, bottom */
   gap: 0.75rem;
   height: 100vh;
@@ -39,9 +39,9 @@ body { margin: 0; }
   grid-column: 1 / span 3;
 }
 
-.left-pane { grid-column: 1; }
-.middle-pane { grid-column: 2; }
-.right-pane { grid-column: 3; }
+.left-pane { grid-column: 1; min-width: 0; }
+.middle-pane { grid-column: 2; min-width: 0; }
+.right-pane { grid-column: 3; min-width: 0; overflow: hidden; }
 .bottom-pane {
   grid-column: 1 / span 3;
 }
