@@ -2,7 +2,7 @@ import http from 'node:http'
 import https from 'node:https'
 import { URL } from 'node:url'
 
-const PORT = process.env.PORT ? Number(process.env.PORT) : 8787
+const PORT = process.env.PORT ? Number(process.env.PORT) : 8788
 const DEBUG = process.env.DEBUG === '1' || process.env.DEBUG === 'true' || process.env.DEBUG === 'yes'
 
 function debugLog(...args) {
