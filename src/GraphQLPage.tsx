@@ -241,6 +241,22 @@ export default function GraphQLPage() {
   }
 
   function onBeautify() {
+    // If rawBody has content, try to parse it. If it contains JSON with a `query`,
+    // reuse the onPasteRaw logic. Otherwise, treat the rawBody as a GraphQL query
+    // and beautify it directly. If rawBody is empty, just beautify existing editors.
+    const body = rawBody.trim()
+    if (body) {
+      const json = safeJsonParse<{ query?: string; variables?: unknown }>(body)
+      if (json?.query) {
+        onPasteRaw(body)
+      } else {
+        // Treat the raw body as a GraphQL query string
+        setQuery(beautifyGraphQL(body))
+      }
+      return
+    }
+
+    // Otherwise just beautify the existing query and variables
     setQuery((q) => beautifyGraphQL(q))
     setVariables((v) => {
       const parsed = safeJsonParse(v)
