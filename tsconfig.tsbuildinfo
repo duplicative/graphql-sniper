@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/Fuzzer.tsx","./src/FuzzerContext.tsx","./src/GraphQLPage.tsx","./src/main.tsx","./src/test/Fuzzer.test.tsx","./src/test/FuzzerContext.test.tsx","./src/test/GraphQLPage.test.tsx","./src/test/e2e.test.tsx","./src/test/setup.ts","./src/test/test-utils.tsx"],"version":"5.9.3"}
