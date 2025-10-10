@@ -1,15 +1,25 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { useFuzzerConfig } from './FuzzerContext'
-import CodeMirror from '@uiw/react-codemirror'
+import CodeMirror, { EditorView } from '@uiw/react-codemirror'
 import { graphql as cmGraphql } from 'cm6-graphql'
 import { json as cmJson } from '@codemirror/lang-json'
+
+interface ReplacementMarker {
+  text: string
+  from: number
+  to: number
+}
 
 interface FuzzResult {
   requestNum: number
   statusCode: string
   contentLength: string
   timeMs: number
+  requestBody: string
+  responseBody: string
+  responseHeaders: Record<string, string>
+  wordlistItem: string
 }
 
 type HeaderMap = Record<string, string>
@@ -40,9 +50,24 @@ function mergeDefaultJsonContentType(headers: HeaderMap): HeaderMap {
   return headers
 }
 
+function parseWordlist(wordlistText: string): string[] {
+  return wordlistText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+}
+
+function replaceTextInQuery(query: string, marker: ReplacementMarker, replacement: string): string {
+  return query.substring(0, marker.from) + replacement + query.substring(marker.to)
+}
+
 export default function Fuzzer() {
   const { config } = useFuzzerConfig()
   
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'config' | 'results'>('config')
+  
+  // Configuration state
   const [url, setUrl] = useState(config.url)
   const [headersRaw, setHeadersRaw] = useState(config.headersRaw)
   const [rawBody, setRawBody] = useState(config.rawBody)
@@ -51,14 +76,22 @@ export default function Fuzzer() {
   const [useProxy, setUseProxy] = useState(config.useProxy)
   const [proxyUrl, setProxyUrl] = useState(config.proxyUrl)
   
+  // Wordlist and replacement state
+  const [wordlistText, setWordlistText] = useState('')
+  const [replacementMarker, setReplacementMarker] = useState<ReplacementMarker | null>(null)
+  const [selectedText, setSelectedText] = useState('')
+  const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null)
+  
+  // Fuzzing state
   const [isRunning, setIsRunning] = useState(false)
   const [results, setResults] = useState<FuzzResult[]>([])
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   
   const abortControllerRef = useRef<AbortController | null>(null)
   const requestCountRef = useRef(0)
+  const editorViewRef = useRef<EditorView | null>(null)
 
   useEffect(() => {
-    // Update local state when config changes (on page load from navigation)
     setUrl(config.url)
     setHeadersRaw(config.headersRaw)
     setRawBody(config.rawBody)
@@ -68,16 +101,64 @@ export default function Fuzzer() {
     setProxyUrl(config.proxyUrl)
   }, [config])
 
-  async function sendSingleRequest(requestNum: number, signal: AbortSignal): Promise<FuzzResult> {
+  function handleQuerySelection(view: EditorView) {
+    editorViewRef.current = view
+    const selection = view.state.selection.main
+    const selectedText = view.state.doc.sliceString(selection.from, selection.to)
+    
+    if (selectedText) {
+      setSelectedText(selectedText)
+      setSelectionRange({ from: selection.from, to: selection.to })
+    } else {
+      setSelectedText('')
+      setSelectionRange(null)
+    }
+  }
+
+  function markForReplacement() {
+    if (selectionRange && selectedText) {
+      setReplacementMarker({
+        text: selectedText,
+        from: selectionRange.from,
+        to: selectionRange.to,
+      })
+    }
+  }
+
+  function clearMarker() {
+    setReplacementMarker(null)
+    setSelectedText('')
+    setSelectionRange(null)
+  }
+
+  async function sendSingleRequest(
+    requestNum: number,
+    wordlistItem: string,
+    signal: AbortSignal
+  ): Promise<FuzzResult> {
     const startTime = performance.now()
     
     try {
       const headersUser = parseRawHeaders(headersRaw)
       const headers = mergeDefaultJsonContentType(headersUser)
 
-      let response: Response
+      // Apply replacement if marker exists
+      let currentQuery = query
+      if (replacementMarker) {
+        currentQuery = replaceTextInQuery(query, replacementMarker, wordlistItem)
+      }
+
+      // Build request body with replaced query
+      const requestBodyObj = {
+        query: currentQuery,
+        variables: JSON.parse(variables || '{}'),
+      }
+      const requestBodyStr = JSON.stringify(requestBodyObj)
+
       let statusCode: string
       let contentLength: string
+      let responseBodyStr = ''
+      let responseHeadersMap: Record<string, string> = {}
 
       if (useProxy) {
         const proxyRes = await fetch(proxyUrl, {
@@ -87,7 +168,7 @@ export default function Fuzzer() {
             url, 
             method: 'POST', 
             headers, 
-            body: rawBody 
+            body: requestBodyStr 
           }),
           signal,
         })
@@ -99,26 +180,25 @@ export default function Fuzzer() {
           contentLength = '0'
         } else {
           statusCode = summary.status?.toString() || 'Unknown'
-          const bodyLength = summary.body ? summary.body.length : 0
-          contentLength = bodyLength.toString()
+          responseBodyStr = summary.body || ''
+          responseHeadersMap = summary.headers || {}
+          contentLength = responseBodyStr.length.toString()
         }
       } else {
-        response = await fetch(url, {
+        const response = await fetch(url, {
           method: 'POST',
           headers,
-          body: rawBody,
+          body: requestBodyStr,
           signal,
         })
         
         statusCode = response.status.toString()
-        const clHeader = response.headers.get('content-length')
+        responseBodyStr = await response.text()
+        contentLength = responseBodyStr.length.toString()
         
-        if (clHeader) {
-          contentLength = clHeader
-        } else {
-          const text = await response.text()
-          contentLength = text.length.toString()
-        }
+        response.headers.forEach((value, key) => {
+          responseHeadersMap[key] = value
+        })
       }
 
       const endTime = performance.now()
@@ -129,13 +209,17 @@ export default function Fuzzer() {
         statusCode,
         contentLength,
         timeMs,
+        requestBody: requestBodyStr,
+        responseBody: responseBodyStr,
+        responseHeaders: responseHeadersMap,
+        wordlistItem,
       }
     } catch (err: any) {
       const endTime = performance.now()
       const timeMs = Math.round(endTime - startTime)
       
       if (err.name === 'AbortError') {
-        throw err // Re-throw abort errors to stop the loop
+        throw err
       }
       
       return {
@@ -143,22 +227,41 @@ export default function Fuzzer() {
         statusCode: `Error: ${err.message || 'Unknown'}`,
         contentLength: '0',
         timeMs,
+        requestBody: '',
+        responseBody: '',
+        responseHeaders: {},
+        wordlistItem,
       }
     }
   }
 
   async function startFuzzing() {
+    const wordlist = parseWordlist(wordlistText)
+    
+    if (wordlist.length === 0) {
+      alert('Please provide a wordlist')
+      return
+    }
+
+    if (!replacementMarker) {
+      alert('Please mark text for replacement')
+      return
+    }
+
     setIsRunning(true)
     setResults([])
+    setActiveTab('results')
     requestCountRef.current = 0
     
     const controller = new AbortController()
     abortControllerRef.current = controller
 
     try {
-      while (!controller.signal.aborted) {
+      for (const word of wordlist) {
+        if (controller.signal.aborted) break
+        
         requestCountRef.current += 1
-        const result = await sendSingleRequest(requestCountRef.current, controller.signal)
+        const result = await sendSingleRequest(requestCountRef.current, word, controller.signal)
         
         setResults((prev) => [...prev, result])
       }
@@ -179,9 +282,23 @@ export default function Fuzzer() {
     setIsRunning(false)
   }
 
+  function toggleRowExpansion(requestNum: number) {
+    setExpandedRows((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(requestNum)) {
+        newSet.delete(requestNum)
+      } else {
+        newSet.add(requestNum)
+      }
+      return newSet
+    })
+  }
+
+  const wordlistLines = parseWordlist(wordlistText).length
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4">
-      <div className="max-w-7xl mx-auto space-y-4">
+      <div className="max-w-[1800px] mx-auto space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-bold text-slate-100">Fuzzer</h1>
@@ -190,148 +307,287 @@ export default function Fuzzer() {
           </Link>
         </div>
 
-        {/* Configuration Panel */}
-        <div className="panel space-y-4">
-          <h2 className="pane-title text-base">Request Configuration</h2>
-          
-          <div>
-            <label className="pane-title">Target URL</label>
-            <input
-              className="input-base mt-1 w-full px-3 py-2"
-              placeholder="https://target.tld/graphql"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-            />
-          </div>
+        {/* Tabs */}
+        <div className="flex gap-2 border-b border-slate-700">
+          <button
+            className={`px-4 py-2 font-medium transition-colors ${
+              activeTab === 'config'
+                ? 'text-indigo-400 border-b-2 border-indigo-400'
+                : 'text-slate-400 hover:text-slate-300'
+            }`}
+            onClick={() => setActiveTab('config')}
+          >
+            Configuration
+          </button>
+          <button
+            className={`px-4 py-2 font-medium transition-colors ${
+              activeTab === 'results'
+                ? 'text-indigo-400 border-b-2 border-indigo-400'
+                : 'text-slate-400 hover:text-slate-300'
+            }`}
+            onClick={() => setActiveTab('results')}
+          >
+            Results ({results.length})
+          </button>
+        </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="pane-title">Global HTTP Headers (raw)</label>
-              <textarea
-                className="header-textarea mt-1 w-full"
-                placeholder="Authorization: Bearer ...&#10;Content-Type: application/json"
-                value={headersRaw}
-                onChange={(e) => setHeadersRaw(e.target.value)}
-              />
-            </div>
-
-            <div>
-              <label className="pane-title">Proxy Configuration</label>
-              <div className="mt-1 flex items-center gap-2">
-                <input 
-                  id="fuzzerUseProxy" 
-                  type="checkbox" 
-                  checked={useProxy} 
-                  onChange={(e) => setUseProxy(e.target.checked)} 
+        {/* Configuration Tab */}
+        {activeTab === 'config' && (
+          <div className="space-y-4">
+            {/* Basic Configuration */}
+            <div className="panel space-y-4">
+              <h2 className="pane-title text-base">Request Configuration</h2>
+              
+              <div>
+                <label className="pane-title">Target URL</label>
+                <input
+                  className="input-base mt-1 w-full px-3 py-2"
+                  placeholder="https://target.tld/graphql"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
                 />
-                <label htmlFor="fuzzerUseProxy" className="text-sm text-slate-300">
-                  Use local proxy
-                </label>
               </div>
-              <input
-                className="input-base mt-2 w-full px-3 py-2 text-xs"
-                value={proxyUrl}
-                onChange={(e) => setProxyUrl(e.target.value)}
-                disabled={!useProxy}
-              />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="pane-title">Global HTTP Headers (raw)</label>
+                  <textarea
+                    className="header-textarea mt-1 w-full"
+                    placeholder="Authorization: Bearer ...&#10;Content-Type: application/json"
+                    value={headersRaw}
+                    onChange={(e) => setHeadersRaw(e.target.value)}
+                  />
+                </div>
+
+                <div>
+                  <label className="pane-title">Proxy Configuration</label>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input 
+                      id="fuzzerUseProxy" 
+                      type="checkbox" 
+                      checked={useProxy} 
+                      onChange={(e) => setUseProxy(e.target.checked)} 
+                    />
+                    <label htmlFor="fuzzerUseProxy" className="text-sm text-slate-300">
+                      Use local proxy
+                    </label>
+                  </div>
+                  <input
+                    className="input-base mt-2 w-full px-3 py-2 text-xs"
+                    value={proxyUrl}
+                    onChange={(e) => setProxyUrl(e.target.value)}
+                    disabled={!useProxy}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <label className="pane-title">Raw GraphQL JSON request body</label>
-            <textarea
-              className="input-base mt-1 w-full font-mono text-xs h-32"
-              placeholder='{"query":"query {...}","variables":{...}}'
-              value={rawBody}
-              onChange={(e) => setRawBody(e.target.value)}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="pane-title">GraphQL Query (for reference)</label>
-              <div className="mt-1">
+            {/* Query Editor with Wordlist - 3 Column Layout */}
+            <div className="grid grid-cols-3 gap-4">
+              {/* GraphQL Query */}
+              <div className="panel">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="pane-title">GraphQL Query (Select Text to Mark)</label>
+                </div>
                 <CodeMirror
                   value={query}
-                  height="200px"
-                  extensions={[cmGraphql()]}
+                  height="400px"
+                  extensions={[
+                    cmGraphql(),
+                    EditorView.updateListener.of((update) => {
+                      if (update.view) {
+                        handleQuerySelection(update.view)
+                      }
+                    }),
+                  ]}
                   theme="dark"
                   onChange={(v) => setQuery(v)}
                 />
+                
+                {/* Selection Info and Mark Button */}
+                <div className="mt-3 space-y-2">
+                  {selectedText && !replacementMarker && (
+                    <div className="text-sm">
+                      <span className="text-slate-400">Selected:</span>{' '}
+                      <span className="text-indigo-400 font-mono">"{selectedText}"</span>
+                    </div>
+                  )}
+                  
+                  {replacementMarker && (
+                    <div className="bg-indigo-900/30 border border-indigo-700 rounded p-2 text-sm">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-slate-400">Marked for replacement:</span>{' '}
+                          <span className="text-indigo-300 font-mono font-bold">"{replacementMarker.text}"</span>
+                        </div>
+                        <button
+                          className="text-slate-400 hover:text-slate-200 text-xs"
+                          onClick={clearMarker}
+                        >
+                          ✕ Clear
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  
+                  <button
+                    className="btn w-full"
+                    onClick={markForReplacement}
+                    disabled={!selectedText || !!replacementMarker}
+                  >
+                    {replacementMarker ? '✓ Text Marked' : 'Mark Selection for Replacement'}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div>
-              <label className="pane-title">Variables (for reference)</label>
-              <div className="mt-1">
+              {/* Variables */}
+              <div className="panel">
+                <label className="pane-title">Variables (JSON)</label>
                 <CodeMirror
                   value={variables}
-                  height="200px"
+                  height="400px"
                   extensions={[cmJson()]}
                   theme="dark"
                   onChange={(v) => setVariables(v)}
                 />
               </div>
+
+              {/* Wordlist */}
+              <div className="panel">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="pane-title">Wordlist</label>
+                  <span className="text-xs text-slate-400">
+                    {wordlistLines} {wordlistLines === 1 ? 'word' : 'words'}
+                  </span>
+                </div>
+                <textarea
+                  className="input-base w-full font-mono text-xs h-[400px]"
+                  placeholder="Paste wordlist here (one word per line)..."
+                  value={wordlistText}
+                  onChange={(e) => setWordlistText(e.target.value)}
+                />
+              </div>
+            </div>
+
+            {/* Fuzzing Controls */}
+            <div className="panel">
+              <div className="flex items-center gap-3">
+                <button
+                  className="btn"
+                  onClick={startFuzzing}
+                  disabled={isRunning || !url || wordlistLines === 0 || !replacementMarker}
+                >
+                  {isRunning ? 'Running...' : 'Start Fuzzing'}
+                </button>
+                <button
+                  className="btn-secondary"
+                  onClick={stopFuzzing}
+                  disabled={!isRunning}
+                >
+                  Stop Fuzzing
+                </button>
+                <div className="text-sm text-slate-400">
+                  {isRunning ? (
+                    <>Fuzzing with {wordlistLines} words... ({results.length} completed)</>
+                  ) : (
+                    <>
+                      Ready to fuzz with {wordlistLines} {wordlistLines === 1 ? 'word' : 'words'}
+                      {!replacementMarker && ' (mark text first)'}
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Controls */}
-        <div className="panel">
-          <div className="flex items-center gap-3">
-            <button
-              className="btn"
-              onClick={startFuzzing}
-              disabled={isRunning || !url}
-            >
-              {isRunning ? 'Running...' : 'Start Fuzzing'}
-            </button>
-            <button
-              className="btn-secondary"
-              onClick={stopFuzzing}
-              disabled={!isRunning}
-            >
-              Stop Fuzzing
-            </button>
-            <div className="text-sm text-slate-400">
-              {isRunning ? `Sending requests... (${results.length} completed)` : `Ready`}
-            </div>
-          </div>
-        </div>
-
-        {/* Results */}
-        <div className="panel">
-          <h2 className="pane-title text-base mb-3">Results</h2>
-          
-          {results.length === 0 ? (
-            <div className="text-slate-400 text-sm py-8 text-center">
-              No results yet. Click "Start Fuzzing" to begin.
-            </div>
-          ) : (
-            <div className="overflow-auto max-h-[500px]">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-slate-800 text-slate-300">
-                  <tr>
-                    <th className="text-left px-3 py-2 font-semibold">Request #</th>
-                    <th className="text-left px-3 py-2 font-semibold">Status Code</th>
-                    <th className="text-left px-3 py-2 font-semibold">Content-Length</th>
-                    <th className="text-left px-3 py-2 font-semibold">Time (ms)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-700">
-                  {results.map((result) => (
-                    <tr key={result.requestNum} className="hover:bg-slate-800/40">
-                      <td className="px-3 py-2 text-slate-300">{result.requestNum}</td>
-                      <td className="px-3 py-2 text-slate-100">{result.statusCode}</td>
-                      <td className="px-3 py-2 text-slate-300">{result.contentLength}</td>
-                      <td className="px-3 py-2 text-slate-300">{result.timeMs}</td>
+        {/* Results Tab */}
+        {activeTab === 'results' && (
+          <div className="panel">
+            <h2 className="pane-title text-base mb-3">Fuzzing Results</h2>
+            
+            {results.length === 0 ? (
+              <div className="text-slate-400 text-sm py-8 text-center">
+                No results yet. Configure the fuzzer and click "Start Fuzzing".
+              </div>
+            ) : (
+              <div className="overflow-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-slate-800 text-slate-300">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold w-16">#</th>
+                      <th className="text-left px-3 py-2 font-semibold">Wordlist Item</th>
+                      <th className="text-left px-3 py-2 font-semibold">Status</th>
+                      <th className="text-left px-3 py-2 font-semibold">Length</th>
+                      <th className="text-left px-3 py-2 font-semibold">Time (ms)</th>
+                      <th className="text-left px-3 py-2 font-semibold w-24">Actions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-700">
+                    {results.map((result) => (
+                      <>
+                        <tr key={result.requestNum} className="hover:bg-slate-800/40">
+                          <td className="px-3 py-2 text-slate-300">{result.requestNum}</td>
+                          <td className="px-3 py-2 text-indigo-300 font-mono">{result.wordlistItem}</td>
+                          <td className="px-3 py-2 text-slate-100">{result.statusCode}</td>
+                          <td className="px-3 py-2 text-slate-300">{result.contentLength}</td>
+                          <td className="px-3 py-2 text-slate-300">{result.timeMs}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              className="text-xs text-indigo-400 hover:text-indigo-300"
+                              onClick={() => toggleRowExpansion(result.requestNum)}
+                            >
+                              {expandedRows.has(result.requestNum) ? '▼ Collapse' : '▶ Expand'}
+                            </button>
+                          </td>
+                        </tr>
+                        {expandedRows.has(result.requestNum) && (
+                          <tr key={`${result.requestNum}-details`}>
+                            <td colSpan={6} className="px-3 py-3 bg-slate-800/60">
+                              <div className="space-y-3">
+                                {/* Request Details */}
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-400 mb-1">
+                                    REQUEST BODY:
+                                  </div>
+                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-40 text-slate-200">
+                                    {result.requestBody || 'N/A'}
+                                  </pre>
+                                </div>
+
+                                {/* Response Headers */}
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-400 mb-1">
+                                    RESPONSE HEADERS:
+                                  </div>
+                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-32 text-slate-200">
+                                    {Object.entries(result.responseHeaders)
+                                      .map(([k, v]) => `${k}: ${v}`)
+                                      .join('\n') || 'N/A'}
+                                  </pre>
+                                </div>
+
+                                {/* Response Body */}
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-400 mb-1">
+                                    RESPONSE BODY:
+                                  </div>
+                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-60 text-slate-200">
+                                    {result.responseBody || 'N/A'}
+                                  </pre>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

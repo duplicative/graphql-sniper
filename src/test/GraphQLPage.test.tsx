@@ -47,7 +47,7 @@ describe('GraphQLPage Component', () => {
 
     it('should transfer all configuration data to FuzzerContext', async () => {
       const user = userEvent.setup()
-      const { result: configResult } = renderWithProviders(<GraphQLPage />)
+      renderWithProviders(<GraphQLPage />)
 
       // Fill out all fields
       const urlInput = screen.getByPlaceholderText(/https:\/\/target\.tld\/graphql/i)
