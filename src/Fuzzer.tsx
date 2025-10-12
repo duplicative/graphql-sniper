@@ -82,10 +82,15 @@ export default function Fuzzer() {
   const [selectedText, setSelectedText] = useState('')
   const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null)
   
+  // Fuzzing configuration
+  const [threads, setThreads] = useState(1)
+  const [delayMs, setDelayMs] = useState(0)
+  
   // Fuzzing state
   const [isRunning, setIsRunning] = useState(false)
   const [results, setResults] = useState<FuzzResult[]>([])
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
+  const [progressCount, setProgressCount] = useState(0)
   
   const abortControllerRef = useRef<AbortController | null>(null)
   const requestCountRef = useRef(0)
@@ -250,6 +255,7 @@ export default function Fuzzer() {
 
     setIsRunning(true)
     setResults([])
+    setProgressCount(0)
     setActiveTab('results')
     requestCountRef.current = 0
     
@@ -257,13 +263,63 @@ export default function Fuzzer() {
     abortControllerRef.current = controller
 
     try {
-      for (const word of wordlist) {
-        if (controller.signal.aborted) break
+      if (threads === 1) {
+        // Sequential execution (original behavior)
+        for (const word of wordlist) {
+          if (controller.signal.aborted) break
+          
+          requestCountRef.current += 1
+          const result = await sendSingleRequest(requestCountRef.current, word, controller.signal)
+          
+          setResults((prev) => [...prev, result])
+          setProgressCount((prev) => prev + 1)
+          
+          // Apply delay if configured
+          if (delayMs > 0 && requestCountRef.current < wordlist.length) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs))
+          }
+        }
+      } else {
+        // Concurrent execution with controlled parallelism
+        const allResults: FuzzResult[] = []
+        const resultMap = new Map<number, FuzzResult>()
+        let processedCount = 0
         
-        requestCountRef.current += 1
-        const result = await sendSingleRequest(requestCountRef.current, word, controller.signal)
-        
-        setResults((prev) => [...prev, result])
+        // Process wordlist in batches based on thread count
+        for (let i = 0; i < wordlist.length; i += threads) {
+          if (controller.signal.aborted) break
+          
+          const batch = wordlist.slice(i, i + threads)
+          const batchPromises = batch.map((word, batchIndex) => {
+            const requestNum = i + batchIndex + 1
+            return sendSingleRequest(requestNum, word, controller.signal)
+          })
+          
+          const batchResults = await Promise.allSettled(batchPromises)
+          
+          // Process batch results
+          batchResults.forEach((promiseResult, batchIndex) => {
+            if (promiseResult.status === 'fulfilled') {
+              const result = promiseResult.value
+              resultMap.set(result.requestNum, result)
+              processedCount++
+            }
+          })
+          
+          // Update results in order
+          const orderedResults: FuzzResult[] = []
+          for (let j = 1; j <= processedCount; j++) {
+            const result = resultMap.get(j)
+            if (result) orderedResults.push(result)
+          }
+          setResults(orderedResults)
+          setProgressCount(processedCount)
+          
+          // Apply delay between batches if configured
+          if (delayMs > 0 && i + threads < wordlist.length) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs))
+          }
+        }
       }
     } catch (err: any) {
       if (err.name !== 'AbortError') {
@@ -469,33 +525,88 @@ export default function Fuzzer() {
               </div>
             </div>
 
+            {/* Performance Configuration */}
+            <div className="panel space-y-4">
+              <h2 className="pane-title text-base">Performance Settings</h2>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="pane-title text-sm">Concurrent Threads</label>
+                  <input
+                    type="number"
+                    className="input-base mt-1 w-full px-3 py-2"
+                    placeholder="1"
+                    min="1"
+                    max="50"
+                    value={threads}
+                    onChange={(e) => setThreads(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+                    disabled={isRunning}
+                  />
+                  <div className="mt-1 text-xs text-slate-400">
+                    Number of parallel requests (1-50). Higher = faster but more aggressive.
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="pane-title text-sm">Delay Between Requests (ms)</label>
+                  <input
+                    type="number"
+                    className="input-base mt-1 w-full px-3 py-2"
+                    placeholder="0"
+                    min="0"
+                    max="10000"
+                    value={delayMs}
+                    onChange={(e) => setDelayMs(Math.max(0, parseInt(e.target.value) || 0))}
+                    disabled={isRunning}
+                  />
+                  <div className="mt-1 text-xs text-slate-400">
+                    Delay between requests/batches. Use to avoid rate limiting.
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Fuzzing Controls */}
             <div className="panel">
-              <div className="flex items-center gap-3">
-                <button
-                  className="btn"
-                  onClick={startFuzzing}
-                  disabled={isRunning || !url || wordlistLines === 0 || !replacementMarker}
-                >
-                  {isRunning ? 'Running...' : 'Start Fuzzing'}
-                </button>
-                <button
-                  className="btn-secondary"
-                  onClick={stopFuzzing}
-                  disabled={!isRunning}
-                >
-                  Stop Fuzzing
-                </button>
-                <div className="text-sm text-slate-400">
-                  {isRunning ? (
-                    <>Fuzzing with {wordlistLines} words... ({results.length} completed)</>
-                  ) : (
-                    <>
-                      Ready to fuzz with {wordlistLines} {wordlistLines === 1 ? 'word' : 'words'}
-                      {!replacementMarker && ' (mark text first)'}
-                    </>
-                  )}
+              <div className="flex flex-col gap-3">
+                <div className="flex items-center gap-3">
+                  <button
+                    className="btn"
+                    onClick={startFuzzing}
+                    disabled={isRunning || !url || wordlistLines === 0 || !replacementMarker}
+                  >
+                    {isRunning ? 'Running...' : 'Start Fuzzing'}
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={stopFuzzing}
+                    disabled={!isRunning}
+                  >
+                    Stop Fuzzing
+                  </button>
+                  <div className="text-sm text-slate-400">
+                    {isRunning ? (
+                      <>
+                        Progress: {progressCount} / {wordlistLines} 
+                        ({Math.round((progressCount / wordlistLines) * 100)}%)
+                      </>
+                    ) : (
+                      <>
+                        Ready to fuzz with {wordlistLines} {wordlistLines === 1 ? 'word' : 'words'}
+                        {!replacementMarker && ' (mark text first)'}
+                      </>
+                    )}
+                  </div>
                 </div>
+                
+                {isRunning && (
+                  <div className="w-full bg-slate-700 rounded-full h-2">
+                    <div
+                      className="bg-indigo-500 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${(progressCount / wordlistLines) * 100}%` }}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </div>
