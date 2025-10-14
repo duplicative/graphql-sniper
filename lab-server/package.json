@@ -1,0 +1,19 @@
+{
+  "name": "graphql-sniper-lab",
+  "version": "1.0.0",
+  "description": "Vulnerable GraphQL server for testing GraphQL Sniper fuzzer",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": ["graphql", "lab", "security", "testing"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@apollo/server": "^4.10.0",
+    "graphql": "^16.8.1",
+    "graphql-tag": "^2.12.6"
+  }
+}
