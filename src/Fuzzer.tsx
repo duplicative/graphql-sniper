@@ -91,6 +91,7 @@ export default function Fuzzer() {
   const [results, setResults] = useState<FuzzResult[]>([])
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set())
   const [progressCount, setProgressCount] = useState(0)
+  const [beautifiedRows, setBeautifiedRows] = useState<Set<number>>(new Set())
   
   const abortControllerRef = useRef<AbortController | null>(null)
   const requestCountRef = useRef(0)
@@ -348,6 +349,30 @@ export default function Fuzzer() {
       }
       return newSet
     })
+  }
+
+  function toggleBeautify(requestNum: number) {
+    setBeautifiedRows((prev) => {
+      const newSet = new Set(prev)
+      if (newSet.has(requestNum)) {
+        newSet.delete(requestNum)
+      } else {
+        newSet.add(requestNum)
+      }
+      return newSet
+    })
+  }
+
+  function beautifyGraphQLBody(body: string): string {
+    try {
+      const parsed = JSON.parse(body)
+      if (parsed.query) {
+        return JSON.stringify(parsed, null, 2)
+      }
+      return body
+    } catch {
+      return body
+    }
   }
 
   const wordlistLines = parseWordlist(wordlistText).length
@@ -654,37 +679,66 @@ export default function Fuzzer() {
                         </tr>
                         {expandedRows.has(result.requestNum) && (
                           <tr key={`${result.requestNum}-details`}>
-                            <td colSpan={6} className="px-3 py-3 bg-slate-800/60">
-                              <div className="space-y-3">
-                                {/* Request Details */}
-                                <div>
-                                  <div className="text-xs font-semibold text-slate-400 mb-1">
-                                    REQUEST BODY:
-                                  </div>
-                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-40 text-slate-200">
-                                    {result.requestBody || 'N/A'}
-                                  </pre>
+                            <td colSpan={6} className="p-0">
+                              <div className="bg-slate-800/60">
+                                {/* Beautify Toggle Button */}
+                                <div className="px-3 py-2 border-b border-slate-700 flex items-center justify-between">
+                                  <span className="text-xs font-semibold text-slate-400">
+                                    REQUEST / RESPONSE
+                                  </span>
+                                  <button
+                                    className="text-xs px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded text-slate-200"
+                                    onClick={() => toggleBeautify(result.requestNum)}
+                                  >
+                                    {beautifiedRows.has(result.requestNum) ? '📝 Raw' : '✨ Beautify'}
+                                  </button>
                                 </div>
 
-                                {/* Response Headers */}
-                                <div>
-                                  <div className="text-xs font-semibold text-slate-400 mb-1">
-                                    RESPONSE HEADERS:
+                                {/* Side-by-side Request/Response */}
+                                <div className="grid grid-cols-2 gap-0 border-b border-slate-700">
+                                  {/* Request Column */}
+                                  <div className="border-r border-slate-700">
+                                    <div className="px-3 py-2 bg-slate-900/50">
+                                      <div className="text-xs font-semibold text-slate-300 mb-2">
+                                        Request
+                                      </div>
+                                      <pre className="bg-slate-900 p-3 rounded text-xs overflow-auto max-h-[400px] text-slate-200 whitespace-pre-wrap break-words">
+                                        {beautifiedRows.has(result.requestNum)
+                                          ? beautifyGraphQLBody(result.requestBody)
+                                          : result.requestBody || 'N/A'}
+                                      </pre>
+                                    </div>
                                   </div>
-                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-32 text-slate-200">
+
+                                  {/* Response Column */}
+                                  <div>
+                                    <div className="px-3 py-2 bg-slate-900/50">
+                                      <div className="flex items-center justify-between mb-2">
+                                        <div className="text-xs font-semibold text-slate-300">
+                                          Response
+                                        </div>
+                                        <div className="text-xs text-slate-400">
+                                          Status: <span className="text-slate-200 font-mono">{result.statusCode}</span>
+                                        </div>
+                                      </div>
+                                      <pre className="bg-slate-900 p-3 rounded text-xs overflow-auto max-h-[400px] text-slate-200 whitespace-pre-wrap break-words">
+                                        {beautifiedRows.has(result.requestNum)
+                                          ? beautifyGraphQLBody(result.responseBody)
+                                          : result.responseBody || 'N/A'}
+                                      </pre>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Response Headers Row */}
+                                <div className="px-3 py-2 bg-slate-900/30">
+                                  <div className="text-xs font-semibold text-slate-400 mb-1">
+                                    Response Headers:
+                                  </div>
+                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-32 text-slate-300">
                                     {Object.entries(result.responseHeaders)
                                       .map(([k, v]) => `${k}: ${v}`)
                                       .join('\n') || 'N/A'}
-                                  </pre>
-                                </div>
-
-                                {/* Response Body */}
-                                <div>
-                                  <div className="text-xs font-semibold text-slate-400 mb-1">
-                                    RESPONSE BODY:
-                                  </div>
-                                  <pre className="bg-slate-900 p-2 rounded text-xs overflow-auto max-h-60 text-slate-200">
-                                    {result.responseBody || 'N/A'}
                                   </pre>
                                 </div>
                               </div>
