@@ -23,3 +23,5 @@ pnpm-debug.log*
 # Lockfiles backups
 package-lock.json.*
 .aider*
+
+curl_to_http.sh
