@@ -62,6 +62,10 @@ function beautifyGraphQL(query: string): string {
   }
 }
 
+function unescapeUnicode(str: string): string {
+  return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 function splitWordsTokenize(token: string): string[] {
   if (!token) return []
   const parts: string[] = []
@@ -156,12 +160,15 @@ export default function GraphQLPage() {
     setRawBody(text)
     const json = safeJsonParse<{ query?: string; variables?: unknown }>(text)
     if (json?.query) {
-      const pretty = beautifyGraphQL(json.query)
+      let pretty = beautifyGraphQL(json.query)
+      pretty = unescapeUnicode(pretty);
       setQuery(pretty)
       const nextSet = new Set(wordSet)
       extractWordsFromGraphQL(pretty, nextSet)
       if (json.variables !== undefined) {
-        setVariables(formatJson(json.variables))
+        let formattedVars = formatJson(json.variables);
+        formattedVars = unescapeUnicode(formattedVars);
+        setVariables(formattedVars);
         extractWordsFromJson(json.variables, nextSet)
       }
       setWordSet(nextSet)
@@ -325,7 +332,8 @@ export default function GraphQLPage() {
     // Extract Data
     const dataMatch = command.match(/--data-raw \$'([^']+)'/);
     if (dataMatch) {
-      const rawData = dataMatch[1].replace(/\\n/g, '\n');
+      let rawData = dataMatch[1].replace(/\\n/g, '\n');
+      rawData = unescapeUnicode(rawData);
       onPasteRaw(rawData);
     }
 

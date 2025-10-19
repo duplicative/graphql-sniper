@@ -54,26 +54,7 @@ function forward({ targetUrl, method, headers, body, timeout = 30000 }) {
       debugLog(`[PROXY] Request body:`, body)
     }
 
-    // Clean and forward all user headers without Node.js defaults
     const forwardedHeaders = { ...headers || {} };
-
-    // Suppress Node.js defaults that make it look non-browser
-    delete forwardedHeaders['user-agent']; // We'll set a browser-like one if missing
-    delete forwardedHeaders['accept-encoding']; // Let server handle compression
-
-    // Ensure browser-like defaults if not provided
-    if (!forwardedHeaders['User-Agent']) {
-      forwardedHeaders['User-Agent'] = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
-    }
-    if (!forwardedHeaders['Accept']) {
-      forwardedHeaders['Accept'] = '*/*';
-    }
-    if (!forwardedHeaders['Accept-Language']) {
-      forwardedHeaders['Accept-Language'] = 'en-US,en;q=0.9';
-    }
-    if (!forwardedHeaders['Accept-Encoding']) {
-      forwardedHeaders['Accept-Encoding'] = 'gzip, deflate, br, zstd';
-    }
 
     // Preserve empty headers (e.g., X-DataStax-Current-Tenant: )
     Object.keys(forwardedHeaders).forEach(key => {
@@ -220,15 +201,7 @@ const server = http.createServer(async (req, res) => {
       outBody = JSON.stringify(body, null, 0); // No pretty-printing, exact format
     }
 
-    // Only add Content-Length if not provided by user (preserve curl-like behavior)
-    if (outBody && !headers['content-length'] && !headers['Content-Length']) {
-      headers['Content-Length'] = Buffer.byteLength(outBody);
-    }
 
-    // Only add Content-Type if not provided (don't override user setting)
-    if (outBody && !headers['content-type'] && !headers['Content-Type']) {
-      headers['Content-Type'] = 'application/json';
-    }
 
     const result = await forward({ targetUrl, method, headers, body: outBody })
     res.statusCode = 200
