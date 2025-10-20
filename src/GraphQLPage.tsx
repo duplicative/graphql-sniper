@@ -62,6 +62,10 @@ function beautifyGraphQL(query: string): string {
   }
 }
 
+function unescapeUnicode(str: string): string {
+  return str.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 function splitWordsTokenize(token: string): string[] {
   if (!token) return []
   const parts: string[] = []
@@ -149,17 +153,22 @@ export default function GraphQLPage() {
   const [respBody, setRespBody] = useState<string>('')
 
   const [wordSet, setWordSet] = useState<Set<string>>(new Set())
+  const [showCurlModal, setShowCurlModal] = useState(false)
+  const [curlCommand, setCurlCommand] = useState('')
 
   function onPasteRaw(text: string) {
     setRawBody(text)
     const json = safeJsonParse<{ query?: string; variables?: unknown }>(text)
     if (json?.query) {
-      const pretty = beautifyGraphQL(json.query)
+      let pretty = beautifyGraphQL(json.query)
+      pretty = unescapeUnicode(pretty);
       setQuery(pretty)
       const nextSet = new Set(wordSet)
       extractWordsFromGraphQL(pretty, nextSet)
       if (json.variables !== undefined) {
-        setVariables(formatJson(json.variables))
+        let formattedVars = formatJson(json.variables);
+        formattedVars = unescapeUnicode(formattedVars);
+        setVariables(formattedVars);
         extractWordsFromJson(json.variables, nextSet)
       }
       setWordSet(nextSet)
@@ -298,6 +307,40 @@ export default function GraphQLPage() {
     setWordSet(new Set())
   }
 
+  function onParseCurl() {
+    const command = curlCommand.trim();
+    if (!command.startsWith('curl ')) {
+      console.error("Invalid cURL command");
+      setShowCurlModal(false);
+      return;
+    }
+
+    // Extract URL
+    const urlMatch = command.match(/'(https?:\/\/[^']+)'/);
+    if (urlMatch) {
+      setUrl(urlMatch[1]);
+    }
+
+    // Extract Headers
+    const headerMatches = command.matchAll(/-H '([^']+)'/g);
+    const headers: string[] = [];
+    for (const match of headerMatches) {
+      headers.push(match[1]);
+    }
+    setHeadersRaw(headers.join('\n'));
+
+    // Extract Data
+    const dataMatch = command.match(/--data-raw \$'([^']+)'/);
+    if (dataMatch) {
+      let rawData = dataMatch[1].replace(/\\n/g, '\n');
+      rawData = unescapeUnicode(rawData);
+      onPasteRaw(rawData);
+    }
+
+    setShowCurlModal(false);
+    setCurlCommand('');
+  }
+
   function onSendToFuzzer() {
     setConfig({
       url,
@@ -332,6 +375,7 @@ export default function GraphQLPage() {
               {sending ? 'Sending…' : 'Send'}
             </button>
             <button className="btn-secondary" onClick={onBeautify}>Beautify</button>
+            <button className="btn-secondary" onClick={() => setShowCurlModal(true)}>Parse from cURL</button>
           </div>
           <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
             <div className="md:col-span-2">
@@ -456,6 +500,28 @@ export default function GraphQLPage() {
           value={wordlistText}
         />
       </div>
+
+      {showCurlModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="w-full max-w-2xl rounded-lg bg-slate-800 p-6 shadow-xl">
+            <h2 className="text-xl font-bold text-white">Parse cURL Request</h2>
+            <textarea
+              className="input-base mt-4 h-64 w-full font-mono text-xs"
+              placeholder="Paste cURL command here..."
+              value={curlCommand}
+              onChange={(e) => setCurlCommand(e.target.value)}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn-secondary" onClick={() => setShowCurlModal(false)}>
+                Cancel
+              </button>
+              <button className="btn" onClick={onParseCurl}>
+                Parse
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
