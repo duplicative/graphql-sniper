@@ -327,6 +327,13 @@ export default function GraphQLPage() {
     for (const match of headerMatches) {
       headers.push(match[1]);
     }
+
+    // Extract Cookies
+    const cookieMatch = command.match(/-b '([^']+)'/);
+    if (cookieMatch) {
+      headers.push(`cookie: ${cookieMatch[1]}`);
+    }
+
     setHeadersRaw(headers.join('\n'));
 
     // Extract Data
