@@ -194,8 +194,12 @@ const server = http.createServer(async (req, res) => {
     let outBody = undefined
 
     if (typeof body === 'string') {
-      // Treat as raw body (like curl --data-binary) - no modification
-      outBody = body
+      try {
+        JSON.parse(body);
+        outBody = body;
+      } catch (e) {
+        outBody = JSON.stringify(body);
+      }
     } else if (body !== undefined) {
       // JSON object - stringify exactly like curl
       outBody = JSON.stringify(body, null, 0); // No pretty-printing, exact format
